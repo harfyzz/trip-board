@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Trip Board — Detective Travel Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Caveat:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --board: #b8956a;
+    --board-dark: #a07f54;
+    --string: #c0392b;
+    --pin: #d23b2f;
+    --paper: #fdfbf3;
+    --ink: #2a2520;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    font-family: 'Inter', system-ui, sans-serif;
+    color: var(--ink);
+    user-select: none;
+  }
+
+  /* ---- Board surface ---- */
+  #board {
+    position: absolute;
+    inset: 0;
+    background-color: #f5f5f5;
+    cursor: grab;
+  }
+  #board.panning { cursor: grabbing; }
+
+  /* The transformable world that holds cards + string */
+  #world {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    transform-origin: 0 0;
+  }
+
+  #strings {
+    position: absolute;
+    top: 0; left: 0;
+    width: 4000px; height: 3000px;
+    overflow: visible;
+    pointer-events: none;
+  }
+  #strings path {
+    stroke: var(--string);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    fill: none;
+    filter: drop-shadow(0 2px 2px rgba(0,0,0,.25));
+  }
+
+  /* ---- Cards ---- */
+  .card {
+    position: absolute;
+    top: 0; left: 0;
+    width: 220px;
+    background: var(--paper);
+    padding: 12px 12px 10px;
+    box-shadow: 0 10px 22px rgba(0,0,0,.35), 0 2px 4px rgba(0,0,0,.25);
+    cursor: grab;
+    will-change: transform;
+  }
+  .card:active { cursor: grabbing; }
+  .card.dragging { box-shadow: 0 22px 40px rgba(0,0,0,.45); z-index: 999 !important; }
+
+  .card .photo {
+    width: 100%;
+    height: 150px;
+    object-fit: cover;
+    display: block;
+    background: #ddd;
+    pointer-events: none;
+  }
+  .card .tape {
+    position: absolute;
+    top: -10px; left: 50%;
+    transform: translateX(-50%) rotate(-3deg);
+    width: 80px; height: 26px;
+    background: rgba(225, 220, 180, .55);
+    border-left: 1px dashed rgba(0,0,0,.1);
+    border-right: 1px dashed rgba(0,0,0,.1);
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  }
+  .pin {
+    position: absolute;
+    top: -9px; left: 50%;
+    transform: translateX(-50%);
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #ff7a6e, var(--pin) 60%, #8e211a);
+    box-shadow: 0 3px 5px rgba(0,0,0,.4);
+    z-index: 5;
+  }
+  .pin::after {
+    content: '';
+    position: absolute;
+    top: 6px; left: 6px;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: rgba(255,255,255,.6);
+  }
+
+  .card .name {
+    font-family: 'Caveat', cursive;
+    font-weight: 700;
+    font-size: 22px;
+    line-height: 1.1;
+    margin: 10px 2px 2px;
+  }
+  .card .addr {
+    font-size: 11.5px;
+    color: #6a6258;
+    margin: 0 2px 6px;
+    line-height: 1.35;
+    min-height: 30px;
+  }
+  .card .meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0 2px;
+    border-top: 1px dashed #cfc7b6;
+    padding-top: 6px;
+  }
+  .card .tag {
+    font-family: 'Special Elite', monospace;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #8a8275;
+    background: #efe9d8;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  .card .price {
+    font-family: 'Special Elite', monospace;
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--ink);
+  }
+  .card.stay {
+    width: 250px;
+    padding: 14px 14px 12px;
+    outline: 3px solid var(--string);
+    outline-offset: 3px;
+  }
+  .card.stay .photo { height: 165px; }
+  .card.stay .name { font-size: 26px; }
+  .card.stay .tag { background: var(--string); color: #fff; }
+
+  /* ---- UI chrome ---- */
+  #topbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 18px;
+    background: linear-gradient(180deg, rgba(30,22,15,.92), rgba(30,22,15,.78));
+    color: #f4ead7;
+    z-index: 1000;
+    box-shadow: 0 2px 12px rgba(0,0,0,.4);
+    backdrop-filter: blur(4px);
+  }
+  #topbar h1 {
+    font-family: 'Special Elite', monospace;
+    font-size: 18px;
+    margin: 0;
+    letter-spacing: .5px;
+  }
+  #topbar .sub {
+    font-size: 12px;
+    color: #c9b89a;
+    margin-right: auto;
+  }
+  button.btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: #2a2520;
+    background: #e8dcc2;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: transform .08s ease, background .15s ease;
+  }
+  button.btn:hover { background: #f1e8d4; }
+  button.btn:active { transform: translateY(1px); }
+  button.btn.primary { background: var(--string); color: #fff; }
+  button.btn.primary:hover { background: #d6483a; }
+
+  .slack-ctl {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #c9b89a;
+  }
+  .slack-ctl input[type="range"] {
+    width: 120px;
+    accent-color: var(--string);
+    cursor: pointer;
+  }
+
+  #hint {
+    position: fixed;
+    bottom: 14px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 12px;
+    color: #f4ead7;
+    background: rgba(30,22,15,.7);
+    padding: 6px 14px;
+    border-radius: 20px;
+    z-index: 1000;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <div id="board">
+    <div id="world">
+      <svg id="strings"></svg>
+    </div>
+  </div>
+
+  <div id="topbar">
+    <h1>🧵 TRIP BOARD</h1>
+    <span class="sub" id="trip-name">— loading case file —</span>
+    <label class="slack-ctl" title="How taut or slack the strings hang">
+      <span>taut</span>
+      <input type="range" id="slack" min="0" max="100" value="35" />
+      <span>slack</span>
+    </label>
+    <button class="btn" id="shuffle">🎲 New random trip</button>
+    <button class="btn" id="recenter">⊕ Recenter</button>
+  </div>
+
+  <div id="hint">Drag cards to rearrange · drag the board to pan · scroll to zoom</div>
+
+<script>
+/* ============================================================
+   Trip Board — first draft with RANDOM data + placeholder images
+   ============================================================ */
+
+const PHOTO = (seed, w = 480, h = 360) =>
+  `https://picsum.photos/seed/${encodeURIComponent(seed)}/${w}/${h}`;
+
+const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const randInt = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+
+// Pools of fake-but-plausible data ----------------------------------
+const CITIES = [
+  { city: 'Lisbon',    cur: '€', streets: ['Rua Garrett', 'Calçada do Combro', 'Travessa do Carmo', 'Rua da Bica'] },
+  { city: 'Kyoto',     cur: '¥', streets: ['Hanamikoji St', 'Pontocho Alley', 'Kiyamachi St', 'Shijo Ave'] },
+  { city: 'Mexico City', cur: '$', streets: ['Av. Álvaro Obregón', 'Calle Colima', 'Av. Amsterdam', 'Calle Tonalá'] },
+  { city: 'Marrakech', cur: 'DH', streets: ['Derb Dabachi', 'Rue Riad Zitoun', 'Souk Semmarine', 'Rue Mouassine'] },
+  { city: 'Porto',     cur: '€', streets: ['Rua das Flores', 'Cais da Ribeira', 'Rua de Cedofeita', 'Rua Miguel Bombarda'] },
+];
+
+const STAY_NAMES = [
+  'The Quiet Loft', 'Casa Azul', 'Garden Studio', 'Old Town Retreat',
+  'Rooftop Hideaway', 'The Blue Door', 'Maison Lumière', 'Sunset Apartment',
+];
+const STAY_KINDS = ['Airbnb', 'Boutique Hotel', 'Guesthouse', 'Apartment'];
+
+const SPOTS = [
+  { name: 'Mercado Central',   tag: 'Market',     base: 0 },
+  { name: 'Café Aurora',       tag: 'Café',       base: 8 },
+  { name: 'Mirador del Río',   tag: 'Viewpoint',  base: 0 },
+  { name: 'Galeria Norte',     tag: 'Museum',     base: 14 },
+  { name: 'Trattoria Lina',    tag: 'Dinner',     base: 35 },
+  { name: 'Parque das Aves',   tag: 'Park',       base: 0 },
+  { name: 'Bar Moderno',       tag: 'Drinks',     base: 22 },
+  { name: 'Praia Pequena',     tag: 'Beach',      base: 0 },
+  { name: 'Livraria Velha',    tag: 'Bookshop',   base: 6 },
+  { name: 'Templo da Colina',  tag: 'Temple',     base: 5 },
+  { name: 'Padaria do Sol',    tag: 'Bakery',     base: 4 },
+  { name: 'Estúdio Cerâmica',  tag: 'Workshop',   base: 40 },
+];
+
+// ------------------------------------------------------------------
+const world = document.getElementById('world');
+const svg = document.getElementById('strings');
+const board = document.getElementById('board');
+
+let cards = [];           // {el, x, y} where x,y = center in world coords
+let stayCard = null;
+const WORLD_W = 4000, WORLD_H = 3000;
+
+function clearBoard() {
+  cards.forEach(c => c.el.remove());
+  cards = [];
+  svg.innerHTML = '';
+}
+
+function makeCard({ kind, name, addr, price, cur, tag, seed, isStay }) {
+  const el = document.createElement('div');
+  el.className = 'card' + (isStay ? ' stay' : '');
+  const priceText = price > 0 ? `${cur}${price}` : 'Free';
+  const priceLabel = isStay ? `${cur}${price}/night` : priceText;
+  el.innerHTML = `
+    <div class="${isStay ? 'pin' : 'pin'}"></div>
+    <img class="photo" src="${PHOTO(seed)}" alt="" loading="lazy" />
+    <div class="name">${name}</div>
+    <div class="addr">${addr}</div>
+    <div class="meta">
+      <span class="tag">${tag}</span>
+      <span class="price">${priceLabel}</span>
+    </div>`;
+  world.appendChild(el);
+  return el;
+}
+
+// Position a card by its CENTER using transform only (no layout reads/writes
+// during drag). Width/height/tilt are cached on the card object once.
+function place(c) {
+  const x = c.x - c.w / 2;
+  const y = c.y - c.h / 2;
+  c.el.style.transform = `translate(${x}px, ${y}px) rotate(${c.tilt}deg)`;
+}
+
+function buildTrip() {
+  clearBoard();
+
+  const place_ = rand(CITIES);
+  const cur = place_.cur;
+  document.getElementById('trip-name').textContent =
+    `Case file: ${place_.city} · ${randInt(3, 9)} days`;
+
+  // Central stay
+  const stay = {
+    name: rand(STAY_NAMES),
+    kind: rand(STAY_KINDS),
+    addr: `${randInt(1, 180)} ${rand(place_.streets)}, ${place_.city}`,
+    price: randInt(60, 320),
+    cur,
+    seed: 'stay-' + Math.random().toString(36).slice(2, 8),
+  };
+
+  const cx = WORLD_W / 2, cy = WORLD_H / 2;
+  const stayEl = makeCard({
+    name: stay.name, addr: stay.addr, price: stay.price, cur,
+    tag: stay.kind, seed: stay.seed, isStay: true,
+  });
+  stayCard = {
+    el: stayEl, x: cx, y: cy,
+    w: stayEl.offsetWidth, h: stayEl.offsetHeight,
+    tilt: +(Math.random() * 4 - 2).toFixed(2),
+  };
+  cards.push(stayCard);
+  place(stayCard);
+
+  // Surrounding spots in a ring
+  const pool = [...SPOTS].sort(() => Math.random() - 0.5);
+  const n = randInt(5, 8);
+  const radius = 360;
+  for (let i = 0; i < n; i++) {
+    const spot = pool[i % pool.length];
+    const angle = (i / n) * Math.PI * 2 + (Math.random() * 0.4 - 0.2);
+    const r = radius + randInt(-40, 90);
+    const x = cx + Math.cos(angle) * r * 1.25;
+    const y = cy + Math.sin(angle) * r;
+    const price = spot.base > 0 ? spot.base + randInt(-3, 12) : 0;
+    const el = makeCard({
+      name: spot.name,
+      addr: `${randInt(1, 180)} ${rand(place_.streets)}, ${place_.city}`,
+      price, cur, tag: spot.tag,
+      seed: 'spot-' + i + '-' + Math.random().toString(36).slice(2, 7),
+      isStay: false,
+    });
+    const c = {
+      el, x, y,
+      w: el.offsetWidth, h: el.offsetHeight,
+      tilt: +(Math.random() * 6 - 3).toFixed(2),
+    };
+    cards.push(c);
+    place(c);
+    makeString(stayCard, c);
+  }
+  drawStrings();
+}
+
+// --- Strings (SVG lines) ---
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const links = []; // {from, to, path, cx, cy, vx, vy}
+let slack = 0.35; // 0 = taut straight line, higher = more droop
+
+// Spring constants for the rope wiggle: how hard it pulls toward rest,
+// and how quickly the swing dies out.
+const STIFF = 0.2;   // higher = snappier
+const DAMP = 0.82;   // lower = wobblier / more oscillation
+
+function makeString(from, to) {
+  const path = document.createElementNS(SVG_NS, 'path');
+  svg.appendChild(path);
+  const lk = { from, to, path, cx: 0, cy: 0, vx: 0, vy: 0 };
+  const t = restControl(lk);
+  lk.cx = t.x; lk.cy = t.y;      // start settled
+  links.push(lk);
+}
+
+// Where the control point WANTS to be: midpoint, dropped straight down by sag.
+function restControl(lk) {
+  const { x: x1, y: y1 } = lk.from;
+  const { x: x2, y: y2 } = lk.to;
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  const sag = slack * dist * 0.5;
+  return { x: (x1 + x2) / 2, y: (y1 + y2) / 2 + sag * 2 };
+}
+
+function renderString(lk) {
+  const { x: x1, y: y1 } = lk.from;
+  const { x: x2, y: y2 } = lk.to;
+  lk.path.setAttribute('d', `M ${x1} ${y1} Q ${lk.cx} ${lk.cy} ${x2} ${y2}`);
+}
+
+// Snap every string to its rest pose and draw (no wiggle) — used on rebuild.
+function drawStrings() {
+  for (const lk of links) {
+    const t = restControl(lk);
+    lk.cx = t.x; lk.cy = t.y; lk.vx = 0; lk.vy = 0;
+    renderString(lk);
+  }
+}
+
+// --- Physics loop: control point chases its rest pose with a damped spring ---
+let rafId = null;
+function physicsStep() {
+  let moving = false;
+  for (const lk of links) {
+    const t = restControl(lk);
+    lk.vx = (lk.vx + (t.x - lk.cx) * STIFF) * DAMP;
+    lk.vy = (lk.vy + (t.y - lk.cy) * STIFF) * DAMP;
+    lk.cx += lk.vx;
+    lk.cy += lk.vy;
+    renderString(lk);
+    if (Math.abs(lk.vx) + Math.abs(lk.vy) > 0.05 ||
+        Math.abs(t.x - lk.cx) + Math.abs(t.y - lk.cy) > 0.05) {
+      moving = true;
+    }
+  }
+  // keep animating while still settling or while a card is being dragged
+  rafId = (moving || drag) ? requestAnimationFrame(physicsStep) : null;
+}
+function ensureAnim() {
+  if (rafId === null) rafId = requestAnimationFrame(physicsStep);
+}
+// reset links on rebuild
+const _clear = clearBoard;
+clearBoard = function () { links.length = 0; _clear(); };
+
+// ============ Pan / Zoom ============
+let scale = 1, panX = 0, panY = 0;
+function applyView() {
+  world.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+}
+function recenter() {
+  // center the stay card in viewport
+  scale = 0.85;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  panX = vw / 2 - (WORLD_W / 2) * scale;
+  panY = vh / 2 - (WORLD_H / 2) * scale;
+  applyView();
+}
+
+let isPanning = false, panStart = null;
+board.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.card')) return;
+  isPanning = true;
+  board.classList.add('panning');
+  panStart = { x: e.clientX - panX, y: e.clientY - panY };
+});
+window.addEventListener('pointermove', (e) => {
+  if (!isPanning) return;
+  panX = e.clientX - panStart.x;
+  panY = e.clientY - panStart.y;
+  applyView();
+});
+window.addEventListener('pointerup', () => {
+  isPanning = false;
+  board.classList.remove('panning');
+});
+
+board.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  const newScale = Math.min(2, Math.max(0.35, scale * factor));
+  // zoom toward cursor
+  const mx = e.clientX, my = e.clientY;
+  panX = mx - (mx - panX) * (newScale / scale);
+  panY = my - (my - panY) * (newScale / scale);
+  scale = newScale;
+  applyView();
+}, { passive: false });
+
+// ============ Card dragging ============
+let drag = null;
+world.addEventListener('pointerdown', (e) => {
+  const cardEl = e.target.closest('.card');
+  if (!cardEl) return;
+  e.stopPropagation();
+  const c = cards.find(c => c.el === cardEl);
+  if (!c) return;
+  cardEl.classList.add('dragging');
+  drag = {
+    c,
+    startX: e.clientX,
+    startY: e.clientY,
+    origX: c.x,
+    origY: c.y,
+  };
+  cardEl.setPointerCapture(e.pointerId);
+});
+world.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const dx = (e.clientX - drag.startX) / scale;
+  const dy = (e.clientY - drag.startY) / scale;
+  drag.c.x = drag.origX + dx;
+  drag.c.y = drag.origY + dy;
+  place(drag.c);
+  ensureAnim();
+});
+world.addEventListener('pointerup', (e) => {
+  if (!drag) return;
+  drag.c.el.classList.remove('dragging');
+  drag = null;
+});
+
+// ============ Buttons ============
+document.getElementById('shuffle').addEventListener('click', () => {
+  buildTrip();
+  recenter();
+});
+document.getElementById('recenter').addEventListener('click', recenter);
+
+document.getElementById('slack').addEventListener('input', (e) => {
+  slack = e.target.value / 100;
+  ensureAnim(); // let the ropes spring to the new slack
+});
+
+// init
+buildTrip();
+recenter();
+window.addEventListener('resize', () => { /* keep current pan */ });
+</script>
+</body>
+</html>
