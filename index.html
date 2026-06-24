@@ -6,15 +6,31 @@
 <title>Trip Board — Detective Travel Map</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Caveat:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Caveat:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@rive-app/canvas@2.38.1"></script>
 <style>
   :root {
-    --board: #b8956a;
-    --board-dark: #a07f54;
-    --string: #c0392b;
-    --pin: #d23b2f;
-    --paper: #fdfbf3;
-    --ink: #2a2520;
+    /* Figma design tokens */
+    --text-default: #1e1e1e;
+    --text-secondary: #757575;
+    --text-tertiary: #b3b3b3;
+    --surface: #ffffff;
+    --radius-card: 18.65px;
+    --radius-image: 13.14px;
+    --radius-pill: 8px;
+    --radius-sm: 4px;
+    /* card drop shadow ("newShadow") */
+    --card-shadow:
+      0 4px 4px -4px rgba(12, 12, 13, 0.05),
+      0 16px 32px -4px rgba(12, 12, 13, 0.10);
+
+    /* board theme */
+    --accent: #f2542d;        /* stay highlight + sparkle red */
+    --accent-2: #ff9d4d;      /* sparkle orange */
+    --string: #ffa4f0;        /* connecting thread */
+    --board-bg: #fafafa;
   }
 
   * { box-sizing: border-box; }
@@ -24,25 +40,56 @@
     height: 100%;
     overflow: hidden;
     font-family: 'Inter', system-ui, sans-serif;
-    color: var(--ink);
+    color: var(--text-default);
     user-select: none;
+    -webkit-user-select: none;
   }
 
   /* ---- Board surface ---- */
   #board {
     position: absolute;
     inset: 0;
-    background-color: #f5f5f5;
+    background-color: var(--board-bg);
+    background-image:
+      radial-gradient(circle at 1px 1px, rgba(0,0,0,.06) 1px, transparent 0);
+    background-size: 26px 26px;
     cursor: grab;
   }
   #board.panning { cursor: grabbing; }
 
-  /* The transformable world that holds cards + string */
+  /* The transformable world that holds cards + strings */
   #world {
     position: absolute;
     top: 0; left: 0;
     width: 100%; height: 100%;
     transform-origin: 0 0;
+  }
+
+  /* Large handwritten vacation-plan title, painted onto the board behind
+     the cards (pans + zooms with the world). */
+  #board-title {
+    position: absolute;
+    left: 2000px; top: 1140px;
+    transform: translate(-50%, -50%);
+    width: max-content;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    z-index: 0;
+  }
+  #wine-canvas {
+    width: 500px; height: 500px;
+    margin-bottom: -100px;          /* tuck it onto the title */
+    pointer-events: none;
+  }
+  #board-title-text {
+    text-align: center;
+    font-family: 'Caveat', cursive;
+    font-weight: 700;
+    font-size: 160px;
+    line-height: 1.02;
+    color: #d6d6d6;
+    cursor: default;
   }
 
   #strings {
@@ -54,110 +101,283 @@
   }
   #strings path {
     stroke: var(--string);
-    stroke-width: 2.5;
+    stroke-width: 3;
     stroke-linecap: round;
     fill: none;
-    filter: drop-shadow(0 2px 2px rgba(0,0,0,.25));
   }
 
-  /* ---- Cards ---- */
+  /* =========================================================
+     CARD  — matches Figma "CardComponent" (node 75:327)
+     A draggable column: white card + handwritten quote below.
+     ========================================================= */
   .card {
     position: absolute;
     top: 0; left: 0;
-    width: 220px;
-    background: var(--paper);
-    padding: 12px 12px 10px;
-    box-shadow: 0 10px 22px rgba(0,0,0,.35), 0 2px 4px rgba(0,0,0,.25);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 298px;
     cursor: grab;
-    will-change: transform;
   }
   .card:active { cursor: grabbing; }
-  .card.dragging { box-shadow: 0 22px 40px rgba(0,0,0,.45); z-index: 999 !important; }
+  /* Only hint compositing while dragging — otherwise the layer is rasterized
+     at natural size and looks blurry when the board is zoomed in. */
+  .card.dragging { z-index: 999 !important; will-change: transform; }
+  .card.dragging .paper { box-shadow: 0 24px 48px -8px rgba(12,12,13,.28), 0 8px 16px -6px rgba(12,12,13,.16); }
 
-  .card .photo {
-    width: 100%;
-    height: 150px;
-    object-fit: cover;
-    display: block;
-    background: #ddd;
-    pointer-events: none;
+  .paper {
+    background: var(--surface);
+    border-radius: var(--radius-card);
+    padding: 8px 8px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: var(--card-shadow);
+    transition: box-shadow .15s ease;
+    position: relative;
   }
-  .card .tape {
+  /* card-hover menu (Figma 105:559 closed, 105:536 open) — sits 6px outside
+     the card's right edge for both the closed button and the open popover */
+  .card-menu {
     position: absolute;
-    top: -10px; left: 50%;
-    transform: translateX(-50%) rotate(-3deg);
-    width: 80px; height: 26px;
-    background: rgba(225, 220, 180, .55);
-    border-left: 1px dashed rgba(0,0,0,.1);
-    border-right: 1px dashed rgba(0,0,0,.1);
-    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+    top: 14px;
+    left: calc(100% + 6px);
+    z-index: 6;
   }
+  .card-menu-btn {
+    position: relative;                      /* anchor for the larger hit area */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px; height: 24px;
+    padding: 0;
+    background: #fff;
+    border: none;
+    border-radius: 16px;
+    color: #1e1e1e;
+    cursor: pointer;
+    box-shadow: var(--card-shadow);
+    opacity: 0;                              /* hidden by default */
+    transition: opacity .15s ease;
+  }
+  /* transparent halo extending the clickable area without changing the pill */
+  .card-menu-btn::before {
+    content: '';
+    position: absolute;
+    inset: -14px;
+  }
+  .card:hover .card-menu-btn { opacity: 1; }
+  /* when the menu opens, the dots step out — the popover takes their slot */
+  .card-menu.open .card-menu-btn { display: none; }
+  .card-menu-pop {
+    position: absolute;
+    top: 0; left: 0;                          /* takes the trigger's position */
+    display: none;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 8px;
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: var(--card-shadow);
+    min-width: 132px;
+  }
+  .card-menu.open .card-menu-pop { display: flex; }
+  .card-menu-item {
+    background: none;
+    border: none;
+    padding: 10px;
+    width: 100%;
+    text-align: left;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 1.2;
+    color: #757575;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: color .12s ease, background .12s ease;
+  }
+  .card-menu-item:hover { color: #303030; background: #f3f3f3; }
+
+  /* pushpin sitting on the top edge of each card — kept paint-cheap so it
+     doesn't slow card dragging (no gradients/inset shadows) */
   .pin {
     position: absolute;
-    top: -9px; left: 50%;
-    transform: translateX(-50%);
+    left: 50%; top: 0;
     width: 18px; height: 18px;
+    transform: translate(-50%, -55%);
     border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, #ff7a6e, var(--pin) 60%, #8e211a);
-    box-shadow: 0 3px 5px rgba(0,0,0,.4);
+    background: var(--accent);
+    box-shadow: 0 2px 3px rgba(0,0,0,.3);
+    pointer-events: none;
     z-index: 5;
   }
   .pin::after {
     content: '';
     position: absolute;
-    top: 6px; left: 6px;
-    width: 5px; height: 5px;
-    border-radius: 50%;
-    background: rgba(255,255,255,.6);
+    left: 50%; top: 100%;
+    width: 2px; height: 5px;
+    transform: translate(-50%, -1px);
+    background: #888;
   }
 
-  .card .name {
+  /* --- image area --- */
+  .photo-wrap {
+    position: relative;
+    width: 282px;
+    height: 250px;
+    border-radius: var(--radius-image);
+    overflow: hidden;
+  }
+  .photo {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    background: #ddd;
+    pointer-events: none;
+  }
+
+  /* tag pill (bottom-right of photo) */
+  .tag-pill {
+    position: absolute;
+    right: 6px; bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--surface);
+    padding: 4px 8px;
+    border-radius: var(--radius-pill);
+    box-shadow: 0 2px 8px rgba(0,0,0,.22);
+  }
+  .tag-pill .tag-ic { width: 14px; height: 14px; color: var(--text-default); flex: none; }
+  .tag-pill span {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
+    font-size: 12px;
+    line-height: 1.2;
+    color: var(--text-default);
+    white-space: nowrap;
+  }
+
+  /* photo-count stack (bottom-left of photo) — Figma node 75:326.
+     Three thumbnails cascade right + recede smaller; front one is biggest
+     and on top, with a count pill over its lower-left corner. */
+  .stack {
+    position: absolute;
+    left: 12px; bottom: 8px;
+    width: 59px; height: 46px;
+    pointer-events: none;
+  }
+  .stack .thumb {
+    position: absolute;
+    object-fit: cover;
+    border: 1.419px solid #fff;
+    box-shadow: 0 2px 5px rgba(0,0,0,.25);
+  }
+  .stack .t-back  { width: 33px;   height: 29.3px; left: 23.4px; top: 8.35px; border-radius: var(--radius-sm); z-index: 1; }
+  .stack .t-mid   { width: 43px;   height: 38.1px; left: 10.5px; top: 3.95px; border-radius: var(--radius-pill); z-index: 2; }
+  .stack .t-front { width: 48.9px; height: 43.3px; left: 1.56px; top: 1.35px; border-radius: var(--radius-pill); z-index: 3; }
+  .stack .count {
+    position: absolute;
+    left: 1px; bottom: 1px;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 19px;
+    height: 27px;
+    padding: 0 5px;
+    margin: 0 0 4px 4px;
+    background: var(--surface);
+    border-radius: 6px;
+    box-shadow: 0 2px 7px rgba(0,0,0,.28);
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--text-default);
+  }
+
+  /* --- text block --- */
+  .text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    /* aligns the title/address left edge with the image stack + stars row */
+    padding-left: 12px;
+  }
+  .title {
     font-family: 'Caveat', cursive;
     font-weight: 700;
-    font-size: 22px;
-    line-height: 1.1;
-    margin: 10px 2px 2px;
+    font-size: 20px;
+    line-height: 1.2;
+    color: var(--text-default);
   }
-  .card .addr {
-    font-size: 11.5px;
-    color: #6a6258;
-    margin: 0 2px 6px;
-    line-height: 1.35;
-    min-height: 30px;
+  .addr {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
+    font-size: 12px;
+    line-height: 1.2;
+    color: var(--text-secondary);
   }
-  .card .meta {
+
+  /* --- third row: rating + price tier --- */
+  .row3 {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    margin: 0 2px;
-    border-top: 1px dashed #cfc7b6;
-    padding-top: 6px;
+    justify-content: space-between;
+    padding-left: 4px;
   }
-  .card .tag {
-    font-family: 'Special Elite', monospace;
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: #8a8275;
-    background: #efe9d8;
-    padding: 2px 6px;
-    border-radius: 3px;
+  .stars {
+    padding: 4px 8px;
+    border-radius: var(--radius-pill);
   }
-  .card .price {
-    font-family: 'Special Elite', monospace;
-    font-weight: 700;
+  /* 5 star slots laid out exactly like Figma (node 75:229): overlapping
+     sparkles with a little vertical jitter, trailing dots for empties. */
+  .starrow { position: relative; width: 92px; height: 20px; }
+  .star { position: absolute; width: 20px; height: 20px; }
+  .star .sp { width: 100%; height: 100%; display: block; }
+  .star .sp path { fill: #ed6222; }
+  .star .dot {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+    transform: translate(-50%, -50%);
+  }
+  .tier {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
     font-size: 14px;
-    color: var(--ink);
+    line-height: 1.2;
+    color: var(--text-default);
+    padding: 4px 8px;
+    border-radius: var(--radius-pill);
+    white-space: nowrap;
+    letter-spacing: .5px;
   }
-  .card.stay {
-    width: 250px;
-    padding: 14px 14px 12px;
-    outline: 3px solid var(--string);
-    outline-offset: 3px;
+
+  /* --- handwritten quote under the card --- */
+  .quote {
+    font-family: 'Caveat', cursive;
+    font-weight: 700;
+    font-size: 20px;
+    line-height: 1.2;
+    color: var(--text-tertiary);
+    padding: 0 4px;
   }
-  .card.stay .photo { height: 165px; }
-  .card.stay .name { font-size: 26px; }
-  .card.stay .tag { background: var(--string); color: #fff; }
+  /* per-letter staggered fade for cycling reviews */
+  .quote .qw { display: inline-block; white-space: nowrap; }
+  .quote .ql { display: inline-block; opacity: 0; transition: opacity .28s ease; }
+
+  /* --- the central "stay" card differs ONLY by its tag (Figma node 78:324):
+     a dark pill with a white home icon + label. Everything else matches a
+     regular spot card. --- */
+  .card.stay .tag-pill { background: #2c2c2c; }
+  .card.stay .tag-pill .tag-ic { color: #f5f5f5; }
+  .card.stay .tag-pill span { color: #ffffff; }
 
   /* ---- UI chrome ---- */
   #topbar {
@@ -168,108 +388,323 @@
     align-items: center;
     gap: 14px;
     padding: 0 18px;
-    background: linear-gradient(180deg, rgba(30,22,15,.92), rgba(30,22,15,.78));
-    color: #f4ead7;
+    background: rgba(255,255,255,.86);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid rgba(0,0,0,.07);
+    color: var(--text-default);
     z-index: 1000;
-    box-shadow: 0 2px 12px rgba(0,0,0,.4);
-    backdrop-filter: blur(4px);
+    box-shadow: 0 2px 10px rgba(0,0,0,.06);
   }
   #topbar h1 {
-    font-family: 'Special Elite', monospace;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
     font-size: 18px;
     margin: 0;
-    letter-spacing: .5px;
+    letter-spacing: .3px;
   }
   #topbar .sub {
+    font-family: 'Space Grotesk', sans-serif;
     font-size: 12px;
-    color: #c9b89a;
+    font-weight: 500;
+    color: var(--text-secondary);
     margin-right: auto;
   }
   button.btn {
-    font-family: 'Inter', sans-serif;
+    font-family: 'Space Grotesk', sans-serif;
     font-size: 13px;
     font-weight: 600;
-    color: #2a2520;
-    background: #e8dcc2;
-    border: none;
+    color: var(--text-default);
+    background: #efeaf6;
+    border: 1px solid rgba(0,0,0,.06);
     padding: 8px 14px;
-    border-radius: 6px;
+    border-radius: var(--radius-pill);
     cursor: pointer;
     transition: transform .08s ease, background .15s ease;
   }
-  button.btn:hover { background: #f1e8d4; }
+  button.btn:hover { background: #e7e0f2; }
   button.btn:active { transform: translateY(1px); }
-  button.btn.primary { background: var(--string); color: #fff; }
-  button.btn.primary:hover { background: #d6483a; }
-
-  .slack-ctl {
-    display: flex;
+  button.btn.btn-icon {
+    padding: 7px;
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: #c9b89a;
+    justify-content: center;
+    color: #343330;
   }
-  .slack-ctl input[type="range"] {
-    width: 120px;
-    accent-color: var(--string);
-    cursor: pointer;
-  }
+  button.btn.btn-icon svg { display: block; }
 
   #hint {
     position: fixed;
     bottom: 14px; left: 50%;
     transform: translateX(-50%);
+    font-family: 'Space Grotesk', sans-serif;
     font-size: 12px;
-    color: #f4ead7;
-    background: rgba(30,22,15,.7);
+    color: var(--text-default);
+    background: rgba(255,255,255,.85);
+    border: 1px solid rgba(0,0,0,.06);
     padding: 6px 14px;
     border-radius: 20px;
     z-index: 1000;
     pointer-events: none;
   }
+
+  /* ===== WORLD MAP VIEW ===== */
+  #map-view { position: absolute; inset: 0; }
+  #map { position: absolute; inset: 0; background: #e8eef0; }
+  #map-title {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    font-family: 'Caveat', cursive; font-weight: 700; font-size: 30px;
+    color: #1e1e1e; background: rgba(255,255,255,.85); backdrop-filter: blur(6px);
+    padding: 4px 20px; border-radius: 16px; z-index: 600; pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,.1);
+  }
+  #map-hint {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    font-family: 'Space Grotesk', sans-serif; font-size: 12px; color: #555;
+    background: rgba(255,255,255,.85); border: 1px solid rgba(0,0,0,.06);
+    padding: 6px 14px; border-radius: 20px; z-index: 600; pointer-events: none;
+  }
+
+  /* --- map marker: fanned photo cluster + name·price pill (Figma 83:430) --- */
+  .mc-marker { background: none; border: none; }
+  .mc { position: relative; width: 128px; height: 132px; pointer-events: none; }
+  .mc-photos { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 110px; height: 86px; }
+  .mc-ph {
+    position: absolute; width: 86px; height: 76px; left: 12px; top: 5px;
+    object-fit: cover; border: 2.6px solid #fff; border-radius: 15px; background: #ddd;
+    box-shadow: 0 4px 4px -1px rgba(12,12,13,.1);
+  }
+  .mc-ph-l { transform: rotate(-15deg); left: 0; z-index: 1; }
+  .mc-ph-r { transform: rotate(15deg); left: 24px; z-index: 1; }
+  .mc-ph-c { z-index: 2; left: 12px; }
+  .mc-pill {
+    position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 5px; white-space: nowrap;
+    background: #fff; padding: 5px 9px; border-radius: 11px;
+    box-shadow: 0 4px 8px rgba(12,12,13,.16);
+    font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 13px; color: #1e1e1e;
+  }
+  .mc-pill .dot { width: 4px; height: 4px; border-radius: 50%; background: #bbb; flex: none; }
+  /* collapse to the text pill only when a marker would overlap another */
+  .mc-photos, .mc-pill { pointer-events: auto; cursor: pointer; }
+  .mc-marker.collapsed .mc-photos { display: none; }
+
+  #back-to-map { font-size: 13px; }
+  #strings path.route {
+    stroke: var(--string); stroke-width: 2.5; stroke-dasharray: 1 12;
+    stroke-linecap: round; opacity: .8;
+  }
+
+  /* ===== DESIGN EDITOR (temporary — remove when done) ===== */
+  #tb-modebar {
+    position: fixed; left: 18px; bottom: 18px; z-index: 1200;
+    display: flex; background: #fff;
+    border: 1px solid rgba(0,0,0,.1); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 6px 18px rgba(0,0,0,.14);
+  }
+  #tb-modebar button {
+    font-family: 'Space Grotesk', sans-serif; font-size: 13px; font-weight: 600;
+    border: none; background: #fff; color: #666; padding: 9px 16px; cursor: pointer;
+  }
+  #tb-modebar button.on { background: #2c2c2c; color: #fff; }
+
+  body.tb-edit .card { cursor: default; }
+  body.tb-edit #board-title { pointer-events: auto; cursor: pointer; }
+  /* these are pointer-events:none by default so they don't block pan/drag —
+     re-enable in edit mode so they can be selected */
+  body.tb-edit .photo,
+  body.tb-edit .stack,
+  body.tb-edit #wine-canvas { pointer-events: auto; }
+  .tb-selected { outline: 2px solid #2c8cff !important; outline-offset: 2px; }
+
+  #tb-inspector {
+    position: fixed; top: 70px; right: 14px; width: 252px;
+    max-height: calc(100vh - 150px); overflow: auto;
+    background: #fff; border: 1px solid rgba(0,0,0,.1); border-radius: 14px;
+    box-shadow: 0 12px 34px rgba(0,0,0,.16); z-index: 1200;
+    display: none; flex-direction: column; padding: 14px; gap: 12px;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+  #tb-insp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  #tb-insp-title { font-size: 13px; color: #1e1e1e; display: block; line-height: 1.3; }
+  .tb-sub { color: #999; font-size: 11px; }
+  #tb-hist { display: flex; gap: 4px; flex: none; }
+  #tb-hist button { width: 26px; height: 24px; border: 1px solid rgba(0,0,0,.12); background: #f7f7f7; border-radius: 6px; font-size: 13px; line-height: 1; color: #333; cursor: pointer; }
+  #tb-hist button:disabled { opacity: .4; cursor: default; }
+  #tb-crumb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+  .tb-chip { border: none; background: #eef1f4; color: #555; font-family: 'Space Grotesk', sans-serif; font-size: 10px; padding: 2px 6px; border-radius: 5px; cursor: pointer; }
+  .tb-chip.on { background: #2c8cff; color: #fff; }
+  .tb-sep { color: #c4c4c4; font-size: 10px; }
+  #tb-insp-body { display: flex; flex-direction: column; gap: 8px; }
+  .tb-f { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #555; }
+  .tb-f > span { flex: 1; }
+  .tb-f input[type=number] { width: 58px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; font-family: inherit; }
+  .tb-f em { color: #aaa; font-style: normal; font-size: 11px; }
+  .tb-f input[type=color] { width: 26px; height: 24px; border: 1px solid #ddd; border-radius: 6px; padding: 0; background: none; cursor: pointer; }
+  .tb-f .tb-hex { width: 76px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 11px; font-family: inherit; }
+  .tb-f select { padding: 4px 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; font-family: inherit; }
+  #tb-insp-actions { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid #eee; padding-top: 10px; }
+  #tb-insp-actions button { font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600; border: 1px solid rgba(0,0,0,.1); background: #f2f2f2; color: #333; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+  #tb-insp-actions button.tb-primary { background: #2c8cff; color: #fff; border-color: transparent; }
+  #tb-toast {
+    position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%);
+    background: #2c2c2c; color: #fff; font-family: 'Space Grotesk', sans-serif; font-size: 12px;
+    padding: 8px 14px; border-radius: 20px; z-index: 1300; opacity: 0;
+    transition: opacity .2s; pointer-events: none;
+  }
+  #tb-toast.show { opacity: 1; }
+  /* ===== /DESIGN EDITOR ===== */
 </style>
 </head>
 <body>
+  <!-- ===== WORLD MAP VIEW ===== -->
+  <div id="map-view">
+    <div id="map"></div>
+    <div id="map-title">✈️ Places I've been</div>
+    <div id="map-hint">Scroll to zoom · tap a place to open its trip board</div>
+  </div>
+
+  <!-- ===== TRIP BOARD VIEW ===== -->
+  <div id="board-view" hidden>
   <div id="board">
     <div id="world">
+      <div id="board-title">
+        <canvas id="wine-canvas" width="1000" height="1000"></canvas>
+        <div id="board-title-text"></div>
+      </div>
       <svg id="strings"></svg>
     </div>
   </div>
 
   <div id="topbar">
-    <h1>🧵 TRIP BOARD</h1>
+    <button class="btn" id="back-to-map">← Map</button>
+    <h1>🧵 Trip Board</h1>
     <span class="sub" id="trip-name">— loading case file —</span>
-    <label class="slack-ctl" title="How taut or slack the strings hang">
-      <span>taut</span>
-      <input type="range" id="slack" min="0" max="100" value="35" />
-      <span>slack</span>
-    </label>
-    <button class="btn" id="shuffle">🎲 New random trip</button>
-    <button class="btn" id="recenter">⊕ Recenter</button>
+    <button class="btn btn-icon" id="recenter" title="Recenter">
+      <svg width="20" height="20" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M29.415 10.1712L21.8287 2.58619C21.643 2.40043 21.4225 2.25307 21.1798 2.15253C20.9371 2.05199 20.677 2.00024 20.4143 2.00024C20.1517 2.00024 19.8916 2.05199 19.6489 2.15253C19.4062 2.25307 19.1857 2.40043 19 2.58619L12.2962 9.31119C10.9637 8.89369 7.92122 8.38994 4.74622 10.9537C4.52738 11.1297 4.34805 11.3498 4.2199 11.5996C4.09175 11.8495 4.01766 12.1236 4.00245 12.404C3.98724 12.6844 4.03125 12.9648 4.13161 13.2271C4.23198 13.4894 4.38645 13.7276 4.58497 13.9262L10.625 19.9637L5.29247 25.2924C5.10483 25.4801 4.99942 25.7346 4.99942 25.9999C4.99942 26.2653 5.10483 26.5198 5.29247 26.7074C5.48011 26.8951 5.73461 27.0005 5.99997 27.0005C6.26534 27.0005 6.51983 26.8951 6.70747 26.7074L12.0362 21.3749L18.0725 27.4112C18.258 27.5975 18.4785 27.7455 18.7213 27.8465C18.9641 27.9475 19.2245 27.9997 19.4875 27.9999C19.535 27.9999 19.5812 27.9999 19.6287 27.9999C19.9138 27.9802 20.1913 27.8993 20.4424 27.7628C20.6935 27.6262 20.9122 27.4373 21.0837 27.2087C23.5387 23.9462 23.3025 21.2937 22.7325 19.7087L29.4162 12.9999C29.6019 12.8141 29.7492 12.5936 29.8496 12.3508C29.95 12.1081 30.0017 11.848 30.0015 11.5853C30.0014 11.3226 29.9496 11.0625 29.8489 10.8199C29.7483 10.5773 29.6008 10.3568 29.415 10.1712ZM28 11.5862L20.8412 18.7687C20.6934 18.9171 20.5959 19.1082 20.5625 19.3149C20.529 19.5217 20.5614 19.7338 20.655 19.9212C21.8375 22.2874 20.43 24.7449 19.4875 25.9987L5.99997 12.5099C7.50997 11.2924 8.95497 10.9712 10.06 10.9712C10.7611 10.9616 11.4565 11.0992 12.1012 11.3749C12.2893 11.4691 12.5023 11.5015 12.7099 11.4676C12.9175 11.4337 13.1091 11.3353 13.2575 11.1862L20.415 3.99994L28 11.5849V11.5862Z" fill="currentColor"/>
+      </svg>
+    </button>
   </div>
 
   <div id="hint">Drag cards to rearrange · drag the board to pan · scroll to zoom</div>
 
+  <!-- ===== DESIGN EDITOR (temporary — remove when done) ===== -->
+  <div id="tb-modebar">
+    <button id="tb-mode-view" class="on">👁 View</button>
+    <button id="tb-mode-edit">✎ Edit</button>
+  </div>
+  <aside id="tb-inspector">
+    <div id="tb-insp-head">
+      <div id="tb-insp-title">Select an element</div>
+      <div id="tb-hist">
+        <button id="tb-undo" title="Undo (⌘Z)" disabled>↶</button>
+        <button id="tb-redo" title="Redo (⌘⇧Z)" disabled>↷</button>
+      </div>
+    </div>
+    <div id="tb-crumb"></div>
+    <div id="tb-insp-body"></div>
+    <div id="tb-insp-actions">
+      <button id="tb-commit" class="tb-primary">Commit</button>
+      <button id="tb-copy">Copy CSS</button>
+      <button id="tb-reset">Reset</button>
+    </div>
+  </aside>
+  <div id="tb-toast"></div>
+  <!-- ===== /DESIGN EDITOR ===== -->
+  </div><!-- /#board-view -->
+
 <script>
 /* ============================================================
-   Trip Board — first draft with RANDOM data + placeholder images
+   Trip Board — first draft with RANDOM data + placeholder images.
+   Card visuals match the Figma "CardComponent" design.
    ============================================================ */
 
 const PHOTO = (seed, w = 480, h = 360) =>
   `https://picsum.photos/seed/${encodeURIComponent(seed)}/${w}/${h}`;
 
+// Keyword-matched photo (LoremFlickr) so each spot's image fits its tag.
+// `lock` keeps the image stable per seed; Picsum is the fallback on failure.
+function hashNum(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h = (h ^ s.charCodeAt(i)) >>> 0; h = (h * 16777619) >>> 0; }
+  return h % 100000;
+}
+function imgFor(keywords, seed, w = 480, h = 360) {
+  const tags = String(keywords).split(',').map(k => encodeURIComponent(k.trim())).filter(Boolean).join(',');
+  return `https://loremflickr.com/${w}/${h}/${tags}?lock=${hashNum(seed + tags)}`;
+}
+function tagImg(cls, keywords, seed, w, h) {
+  return `<img class="${cls}" src="${imgFor(keywords, seed, w, h)}" data-fb="${PHOTO(seed, w, h)}" alt="" loading="lazy" />`;
+}
+// Map each tag / stay-kind to a single search keyword (verified to return
+// images on LoremFlickr — multi-word/compound tags there often 500).
+const TAG_KEYWORDS = {
+  Market: 'market', 'Café': 'coffee', Viewpoint: 'mountain',
+  Museum: 'art', Dinner: 'restaurant', Park: 'park',
+  Drinks: 'bar', Beach: 'beach', Bookshop: 'books',
+  Temple: 'temple', Bakery: 'bakery', Workshop: 'pottery',
+  Airbnb: 'apartment', 'Boutique Hotel': 'hotel',
+  Guesthouse: 'interior', Apartment: 'apartment',
+};
+// Reliable keyword per destination for the map markers (cities themselves
+// are sparse on LoremFlickr, so use a fitting generic that loads).
+const CITY_KW = {
+  Lisbon: 'architecture', Kyoto: 'temple', 'Mexico City': 'street',
+  Marrakech: 'market', Porto: 'architecture', 'Reykjavík': 'mountain',
+  'Cape Town': 'mountain', 'New York': 'skyline', Bali: 'beach', Sydney: 'skyline',
+};
+// Swap to the Picsum fallback if a keyword image fails to load.
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img && img.tagName === 'IMG' && img.dataset && img.dataset.fb) {
+    const fb = img.dataset.fb; img.removeAttribute('data-fb'); img.src = fb;
+  }
+}, true);
+
 const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const randInt = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
 
-// Pools of fake-but-plausible data ----------------------------------
-const CITIES = [
-  { city: 'Lisbon',    cur: '€', streets: ['Rua Garrett', 'Calçada do Combro', 'Travessa do Carmo', 'Rua da Bica'] },
-  { city: 'Kyoto',     cur: '¥', streets: ['Hanamikoji St', 'Pontocho Alley', 'Kiyamachi St', 'Shijo Ave'] },
-  { city: 'Mexico City', cur: '$', streets: ['Av. Álvaro Obregón', 'Calle Colima', 'Av. Amsterdam', 'Calle Tonalá'] },
-  { city: 'Marrakech', cur: 'DH', streets: ['Derb Dabachi', 'Rue Riad Zitoun', 'Souk Semmarine', 'Rue Mouassine'] },
-  { city: 'Porto',     cur: '€', streets: ['Rua das Flores', 'Cais da Ribeira', 'Rua de Cedofeita', 'Rua Miguel Bombarda'] },
+/* ---- SVG snippets ---------------------------------------------------- */
+// Exact filled-star sparkle from Figma (20×20 viewBox).
+const SPARK_PATH = '<path d="M8.61184 4.15266C9.12142 2.91309 10.877 2.91309 11.3865 4.15266L12.4478 6.73432C12.6001 7.10483 12.8943 7.39903 13.2648 7.55134L15.8465 8.61263C17.0861 9.12221 17.0861 10.8778 15.8465 11.3873L13.2648 12.4486C12.8943 12.6009 12.6001 12.8951 12.4478 13.2656L11.3865 15.8473C10.877 17.0869 9.12141 17.0869 8.61184 15.8473L7.55055 13.2656C7.39823 12.8951 7.10404 12.6009 6.73352 12.4486L4.15187 11.3873C2.9123 10.8778 2.9123 9.12221 4.15187 8.61263L6.73353 7.55134C7.10404 7.39903 7.39823 7.10483 7.55055 6.73432L8.61184 4.15266Z"/>';
+const TAG_IC =
+  '<svg class="tag-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r="1.1" fill="currentColor" stroke="none"/></svg>';
+// Home icon for the stay card's tag (Figma node 78:324).
+const HOME_IC =
+  '<svg class="tag-ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+  'stroke-linecap="round" stroke-linejoin="round"><path d="M2 6L8 1.33333L14 6V13.3333C14 13.687 13.8595 14.0261 13.6095 14.2761C13.3594 14.5262 13.0203 14.6667 12.6667 14.6667H3.33333C2.97971 14.6667 2.64057 14.5262 2.39052 14.2761C2.14048 14.0261 2 13.687 2 13.3333V6Z"/></svg>';
+
+// Build the 5-star row for a given rating (1–5). Filled slots use the Figma
+// sparkle with the same overlapping layout + vertical jitter; the remaining
+// slots are dots. Step/offsets mirror Figma node 75:229.
+function starsHTML(rating) {
+  let out = '';
+  for (let i = 0; i < 5; i++) {
+    const on = i < rating;
+    const top = on ? (i % 2 === 0 ? 3 : -3) : 0;
+    out += `<span class="star" style="left:${i * 13}px;top:${top}px" aria-hidden="true">`;
+    out += on
+      ? `<svg class="sp" viewBox="0 0 20 20">${SPARK_PATH}</svg>`
+      : '<span class="dot"></span>';
+    out += '</span>';
+  }
+  return `<div class="starrow">${out}</div>`;
+}
+
+/* ---- Fake-but-plausible data pools ----------------------------------- */
+// Destinations the creator has visited — placed on the world map.
+const DESTINATIONS = [
+  { name: 'Alfama, Lisbon',      city: 'Lisbon',      cur: '€',  lat: 38.712, lng: -9.134,  streets: ['Rua Garrett', 'Calçada do Combro', 'Travessa do Carmo', 'Rua da Bica'] },
+  { name: 'Gion, Kyoto',         city: 'Kyoto',       cur: '¥',  lat: 35.003, lng: 135.778, streets: ['Hanamikoji St', 'Pontocho Alley', 'Kiyamachi St', 'Shijo Ave'] },
+  { name: 'Roma, Mexico City',   city: 'Mexico City', cur: '$',  lat: 19.419, lng: -99.160, streets: ['Av. Álvaro Obregón', 'Calle Colima', 'Av. Amsterdam', 'Calle Tonalá'] },
+  { name: 'Medina, Marrakech',   city: 'Marrakech',   cur: 'DH', lat: 31.630, lng: -7.989,  streets: ['Derb Dabachi', 'Rue Riad Zitoun', 'Souk Semmarine', 'Rue Mouassine'] },
+  { name: 'Ribeira, Porto',      city: 'Porto',       cur: '€',  lat: 41.140, lng: -8.611,  streets: ['Rua das Flores', 'Cais da Ribeira', 'Rua de Cedofeita', 'Rua Miguel Bombarda'] },
+  { name: 'Reykjavík',           city: 'Reykjavík',   cur: 'kr', lat: 64.146, lng: -21.940, streets: ['Laugavegur', 'Skólavörðustígur', 'Hverfisgata', 'Bankastræti'] },
+  { name: 'Bo-Kaap, Cape Town',  city: 'Cape Town',   cur: 'R',  lat: -33.920, lng: 18.410, streets: ['Wale St', 'Long St', 'Bree St', 'Kloof St'] },
+  { name: 'Williamsburg, NYC',   city: 'New York',    cur: '$',  lat: 40.714, lng: -73.961, streets: ['Bedford Ave', 'Wythe Ave', 'Grand St', 'Metropolitan Ave'] },
+  { name: 'Ubud, Bali',          city: 'Bali',        cur: 'Rp', lat: -8.507, lng: 115.262, streets: ['Jl. Monkey Forest', 'Jl. Raya Ubud', 'Jl. Hanoman', 'Jl. Kajeng'] },
+  { name: 'Surry Hills, Sydney', city: 'Sydney',      cur: 'A$', lat: -33.884, lng: 151.211, streets: ['Crown St', 'Bourke St', 'Cleveland St', 'Devonshire St'] },
 ];
 
 const STAY_NAMES = [
@@ -279,142 +714,279 @@ const STAY_NAMES = [
 const STAY_KINDS = ['Airbnb', 'Boutique Hotel', 'Guesthouse', 'Apartment'];
 
 const SPOTS = [
-  { name: 'Mercado Central',   tag: 'Market',     base: 0 },
-  { name: 'Café Aurora',       tag: 'Café',       base: 8 },
-  { name: 'Mirador del Río',   tag: 'Viewpoint',  base: 0 },
-  { name: 'Galeria Norte',     tag: 'Museum',     base: 14 },
-  { name: 'Trattoria Lina',    tag: 'Dinner',     base: 35 },
-  { name: 'Parque das Aves',   tag: 'Park',       base: 0 },
-  { name: 'Bar Moderno',       tag: 'Drinks',     base: 22 },
-  { name: 'Praia Pequena',     tag: 'Beach',      base: 0 },
-  { name: 'Livraria Velha',    tag: 'Bookshop',   base: 6 },
-  { name: 'Templo da Colina',  tag: 'Temple',     base: 5 },
-  { name: 'Padaria do Sol',    tag: 'Bakery',     base: 4 },
-  { name: 'Estúdio Cerâmica',  tag: 'Workshop',   base: 40 },
+  { name: 'Mercado Central',  tag: 'Market',    base: 0 },
+  { name: 'Café Aurora',      tag: 'Café',      base: 8 },
+  { name: 'Mirador del Río',  tag: 'Viewpoint', base: 0 },
+  { name: 'Galeria Norte',    tag: 'Museum',    base: 14 },
+  { name: 'Trattoria Lina',   tag: 'Dinner',    base: 35 },
+  { name: 'Parque das Aves',  tag: 'Park',      base: 0 },
+  { name: 'Bar Moderno',      tag: 'Drinks',    base: 22 },
+  { name: 'Praia Pequena',    tag: 'Beach',     base: 0 },
+  { name: 'Livraria Velha',   tag: 'Bookshop',  base: 6 },
+  { name: 'Templo da Colina', tag: 'Temple',    base: 5 },
+  { name: 'Padaria do Sol',   tag: 'Bakery',    base: 4 },
+  { name: 'Estúdio Cerâmica', tag: 'Workshop',  base: 40 },
 ];
 
-// ------------------------------------------------------------------
+// Review fragments keyed by star rating.
+const REVIEWS = {
+  5: ['Hands down the best part of the trip.', 'Could not recommend more.', 'Already planning to come back.'],
+  4: ['Really lovely, just a touch busy.', 'Great find, would return.', 'Charming spot, worth the detour.'],
+  3: ['Decent, but a bit crowded.', 'Fine for an hour or so.', 'Solid, nothing mind-blowing.'],
+  2: ['A little underwhelming, honestly.', "Wouldn't rush back.", 'Bit of a tourist trap.'],
+  1: ['Skip it — not worth the trek.', 'Pretty disappointing.', "Wish we'd spent the time elsewhere."],
+};
+const STAY_REVIEWS = [
+  'Home base for the whole week — perfect.', 'Slept like a baby, great location.',
+  'Comfy, quiet, and right in the middle of it all.', 'Would book this place again in a heartbeat.',
+  'Spotless, and the host thought of everything.', 'Quiet street, easy walk to everywhere.',
+  'Felt like our own little hideaway.',
+];
+
+// Pick 7 distinct reviews for a card to cycle through.
+function pickReviews(isStay) {
+  const pool = isStay ? STAY_REVIEWS : Object.values(REVIEWS).flat();
+  return [...pool].sort(() => Math.random() - 0.5).slice(0, 7).map(f => `“${f}”`);
+}
+
+// Split a quote into per-word / per-letter spans so it can fade letter by
+// letter. Each letter gets an increasing transition-delay for the stagger.
+function buildQuoteSpans(text) {
+  let idx = 0;
+  return text.split(' ').map(word => {
+    const letters = [...word].map(ch => {
+      const s = `<span class="ql" style="transition-delay:${idx * 11}ms">${ch}</span>`;
+      idx++;
+      return s;
+    }).join('');
+    idx++; // count the space so the next word keeps the rhythm
+    return `<span class="qw">${letters}</span>`;
+  }).join(' ');
+}
+
+function setQuote(el, text) {
+  el.innerHTML = buildQuoteSpans(text);
+  // Force a reflow so the opacity:0 starting state is committed before we flip
+  // to 1 — otherwise the browser can batch both into one style recalc and the
+  // letters snap in all at once instead of transitioning in sequence.
+  void el.offsetWidth;
+  el.querySelectorAll('.ql').forEach(s => { s.style.opacity = '1'; });
+}
+
+// Fade the current quote out (letter by letter), then swap in the next one.
+function cycleQuote(c) {
+  const spans = [...c.quoteEl.querySelectorAll('.ql')];
+  spans.forEach((s, i) => { s.style.transitionDelay = `${i * 9}ms`; s.style.opacity = '0'; });
+  const outMs = spans.length * 9 + 300;
+  c.swapTimer = setTimeout(() => {
+    c.qi = (c.qi + 1) % c.reviews.length;
+    setQuote(c.quoteEl, c.reviews[c.qi]);
+  }, outMs);
+}
+
+// Attach the rotating review list to a card and start its cycle (phases are
+// randomised so the cards don't all flip at the same instant).
+function setupQuotes(c, reviews) {
+  c.quoteEl = c.el.querySelector('.quote');
+  c.reviews = reviews;
+  c.qi = 0;
+  setQuote(c.quoteEl, reviews[0]);
+  const tick = () => { if (!editMode) cycleQuote(c); c.timer = setTimeout(tick, 5000); };
+  c.timer = setTimeout(tick, randInt(3000, 7000));
+}
+
+function priceTier(v) {
+  if (v <= 0) return 'Free';
+  if (v < 10) return '$';
+  if (v < 25) return '$$';
+  return '$$$';
+}
+
+/* ---- Board state ----------------------------------------------------- */
 const world = document.getElementById('world');
 const svg = document.getElementById('strings');
 const board = document.getElementById('board');
 
-let cards = [];           // {el, x, y} where x,y = center in world coords
+let cards = [];           // {el, x, y, w, h, tilt} — x,y = center in world coords
 let stayCard = null;
+let editMode = false;     // design-editor toggle (see DESIGN EDITOR block below)
 const WORLD_W = 4000, WORLD_H = 3000;
 
 function clearBoard() {
-  cards.forEach(c => c.el.remove());
+  cards.forEach(c => {
+    clearTimeout(c.timer);
+    clearTimeout(c.swapTimer);
+    c.el.remove();
+  });
   cards = [];
   svg.innerHTML = '';
 }
 
-function makeCard({ kind, name, addr, price, cur, tag, seed, isStay }) {
+// Build one card element matching the Figma design.
+function makeCard({ name, addr, tag, priceLabel, rating, photoCount, seed, isStay }) {
   const el = document.createElement('div');
   el.className = 'card' + (isStay ? ' stay' : '');
-  const priceText = price > 0 ? `${cur}${price}` : 'Free';
-  const priceLabel = isStay ? `${cur}${price}/night` : priceText;
+  const kw = TAG_KEYWORDS[tag] || (tag || '').toLowerCase();
   el.innerHTML = `
-    <div class="${isStay ? 'pin' : 'pin'}"></div>
-    <img class="photo" src="${PHOTO(seed)}" alt="" loading="lazy" />
-    <div class="name">${name}</div>
-    <div class="addr">${addr}</div>
-    <div class="meta">
-      <span class="tag">${tag}</span>
-      <span class="price">${priceLabel}</span>
-    </div>`;
+    <div class="paper">
+      <div class="pin"></div>
+      <div class="card-menu">
+        <button class="card-menu-btn" type="button" aria-label="Card menu">
+          <svg width="32" height="24" viewBox="0 0 32 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="10" cy="12" r="2" fill="currentColor"/>
+            <circle cx="16" cy="12" r="2" fill="currentColor"/>
+            <circle cx="22" cy="12" r="2" fill="currentColor"/>
+          </svg>
+        </button>
+        <div class="card-menu-pop" role="menu">
+          <button class="card-menu-item" data-act="tag" role="menuitem">Edit</button>
+          <button class="card-menu-item" data-act="dup" role="menuitem">Duplicate</button>
+          <button class="card-menu-item" data-act="fix" role="menuitem">Fix</button>
+          <button class="card-menu-item" data-act="del" role="menuitem">Delete</button>
+        </div>
+      </div>
+      <div class="photo-wrap">
+        ${tagImg('photo', kw, seed, 760, 570)}
+        <div class="stack">
+          ${tagImg('thumb t-back', kw, seed + '-c', 160, 140)}
+          ${tagImg('thumb t-mid', kw, seed + '-b', 160, 140)}
+          ${tagImg('thumb t-front', kw, seed + '-a', 160, 140)}
+          <span class="count">${photoCount}</span>
+        </div>
+        <div class="tag-pill">${isStay ? HOME_IC : TAG_IC}<span>${tag}</span></div>
+      </div>
+      <div class="text">
+        <div class="title">${name}</div>
+        <div class="addr">${addr}</div>
+      </div>
+      <div class="row3">
+        <div class="stars">${starsHTML(rating)}</div>
+        <div class="tier">${priceLabel}</div>
+      </div>
+    </div>
+    <div class="quote"></div>`;
   world.appendChild(el);
   return el;
 }
 
-// Position a card by its CENTER using transform only (no layout reads/writes
-// during drag). Width/height/tilt are cached on the card object once.
+// Position a card by its CENTER using transform only (cheap during drag).
 function place(c) {
   const x = c.x - c.w / 2;
   const y = c.y - c.h / 2;
   c.el.style.transform = `translate(${x}px, ${y}px) rotate(${c.tilt}deg)`;
 }
 
-function buildTrip() {
-  clearBoard();
-
-  const place_ = rand(CITIES);
-  const cur = place_.cur;
-  document.getElementById('trip-name').textContent =
-    `Case file: ${place_.city} · ${randInt(3, 9)} days`;
-
-  // Central stay
-  const stay = {
-    name: rand(STAY_NAMES),
-    kind: rand(STAY_KINDS),
-    addr: `${randInt(1, 180)} ${rand(place_.streets)}, ${place_.city}`,
-    price: randInt(60, 320),
-    cur,
-    seed: 'stay-' + Math.random().toString(36).slice(2, 8),
+function registerCard(el, x, y, tiltRange) {
+  const c = {
+    el, x, y,
+    w: el.offsetWidth, h: el.offsetHeight,
+    tilt: +(Math.random() * tiltRange * 2 - tiltRange).toFixed(2),
   };
+  cards.push(c);
+  place(c);
+  return c;
+}
+
+// Where each base sits on the board (offsets from world centre), by base count.
+const BASE_ANCHORS = {
+  1: [[0, 0]],
+  2: [[-1050, -120], [1050, 120]],
+  3: [[-1100, -360], [1150, -260], [0, 600]],
+  4: [[-1120, -470], [1120, -470], [-1120, 560], [1120, 560]],
+};
+
+let currentDest = null;
+const bases = [];   // base (stay) cards, in travel order
+
+function buildBoard(dest) {
+  currentDest = dest;
+  clearBoard();
+  bases.length = 0;
+
+  document.getElementById('trip-name').textContent =
+    `Case file: ${dest.city} · ${randInt(4, 12)} days`;
+  document.getElementById('board-title-text').innerHTML =
+    `${dest.city} Vacation<br>${new Date().getFullYear()}`;
 
   const cx = WORLD_W / 2, cy = WORLD_H / 2;
-  const stayEl = makeCard({
-    name: stay.name, addr: stay.addr, price: stay.price, cur,
-    tag: stay.kind, seed: stay.seed, isStay: true,
-  });
-  stayCard = {
-    el: stayEl, x: cx, y: cy,
-    w: stayEl.offsetWidth, h: stayEl.offsetHeight,
-    tilt: +(Math.random() * 4 - 2).toFixed(2),
-  };
-  cards.push(stayCard);
-  place(stayCard);
+  const nBases = randInt(1, 4);
+  const anchors = BASE_ANCHORS[nBases];
+  const stayNames = [...STAY_NAMES].sort(() => Math.random() - 0.5);
+  const spotPool = [...SPOTS].sort(() => Math.random() - 0.5);
+  let spotIdx = 0;
 
-  // Surrounding spots in a ring
-  const pool = [...SPOTS].sort(() => Math.random() - 0.5);
-  const n = randInt(5, 8);
-  const radius = 360;
-  for (let i = 0; i < n; i++) {
-    const spot = pool[i % pool.length];
-    const angle = (i / n) * Math.PI * 2 + (Math.random() * 0.4 - 0.2);
-    const r = radius + randInt(-40, 90);
-    const x = cx + Math.cos(angle) * r * 1.25;
-    const y = cy + Math.sin(angle) * r;
-    const price = spot.base > 0 ? spot.base + randInt(-3, 12) : 0;
-    const el = makeCard({
-      name: spot.name,
-      addr: `${randInt(1, 180)} ${rand(place_.streets)}, ${place_.city}`,
-      price, cur, tag: spot.tag,
-      seed: 'spot-' + i + '-' + Math.random().toString(36).slice(2, 7),
-      isStay: false,
+  for (let b = 0; b < nBases; b++) {
+    const bx = cx + anchors[b][0], by = cy + anchors[b][1];
+
+    // --- a base (where they stayed) ---
+    const stayPrice = randInt(60, 320);
+    const stayRating = randInt(4, 5);
+    const baseEl = makeCard({
+      name: stayNames[b % stayNames.length],
+      addr: `${randInt(1, 180)} ${rand(dest.streets)}, ${dest.city}`,
+      tag: rand(STAY_KINDS),
+      priceLabel: `${dest.cur}${stayPrice}/night`,
+      rating: stayRating,
+      photoCount: randInt(6, 14),
+      seed: `stay-${b}-${Math.random().toString(36).slice(2, 7)}`,
+      isStay: true,
     });
-    const c = {
-      el, x, y,
-      w: el.offsetWidth, h: el.offsetHeight,
-      tilt: +(Math.random() * 6 - 3).toFixed(2),
-    };
-    cards.push(c);
-    place(c);
-    makeString(stayCard, c);
+    const baseCard = registerCard(baseEl, bx, by, 1.5);
+    setupQuotes(baseCard, pickReviews(true));
+    bases.push(baseCard);
+
+    // --- its ring of spots ---
+    const n = randInt(3, 5);
+    const radius = 440;
+    for (let i = 0; i < n; i++) {
+      const spot = spotPool[spotIdx++ % spotPool.length];
+      const angle = (i / n) * Math.PI * 2 + (Math.random() * 0.4 - 0.2);
+      const r = radius + randInt(-40, 90);
+      const x = bx + Math.cos(angle) * r * 1.3;
+      const y = by + Math.sin(angle) * r;
+      const price = spot.base > 0 ? spot.base + randInt(-3, 12) : 0;
+      const rating = randInt(2, 5);
+      const el = makeCard({
+        name: spot.name,
+        addr: `${randInt(1, 180)} ${rand(dest.streets)}, ${dest.city}`,
+        tag: spot.tag,
+        priceLabel: priceTier(price),
+        rating,
+        photoCount: randInt(3, 9),
+        seed: `spot-${b}-${i}-${Math.random().toString(36).slice(2, 7)}`,
+        isStay: false,
+      });
+      const c = registerCard(el, x, y, 3);
+      setupQuotes(c, pickReviews(false));
+      makeString(baseCard, c);
+    }
   }
+
+  // route line connecting the bases in travel order
+  for (let b = 0; b < bases.length - 1; b++) makeString(bases[b], bases[b + 1], { route: true });
+
+  stayCard = bases[0];
   drawStrings();
 }
 
-// --- Strings (SVG lines) ---
+/* ---- Strings (SVG quadratic curves with a little physics) ------------ */
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const links = []; // {from, to, path, cx, cy, vx, vy}
-let slack = 0.35; // 0 = taut straight line, higher = more droop
+let slack = 0.70; // 0 = taut straight line, higher = more droop
 
-// Spring constants for the rope wiggle: how hard it pulls toward rest,
-// and how quickly the swing dies out.
 const STIFF = 0.2;   // higher = snappier
-const DAMP = 0.82;   // lower = wobblier / more oscillation
+const DAMP = 0.82;   // lower = wobblier
 
-function makeString(from, to) {
+function makeString(from, to, opts) {
   const path = document.createElementNS(SVG_NS, 'path');
+  if (opts && opts.route) path.classList.add('route');
   svg.appendChild(path);
   const lk = { from, to, path, cx: 0, cy: 0, vx: 0, vy: 0 };
   const t = restControl(lk);
-  lk.cx = t.x; lk.cy = t.y;      // start settled
+  lk.cx = t.x; lk.cy = t.y;
   links.push(lk);
 }
 
-// Where the control point WANTS to be: midpoint, dropped straight down by sag.
 function restControl(lk) {
   const { x: x1, y: y1 } = lk.from;
   const { x: x2, y: y2 } = lk.to;
@@ -429,7 +1001,6 @@ function renderString(lk) {
   lk.path.setAttribute('d', `M ${x1} ${y1} Q ${lk.cx} ${lk.cy} ${x2} ${y2}`);
 }
 
-// Snap every string to its rest pose and draw (no wiggle) — used on rebuild.
 function drawStrings() {
   for (const lk of links) {
     const t = restControl(lk);
@@ -438,7 +1009,6 @@ function drawStrings() {
   }
 }
 
-// --- Physics loop: control point chases its rest pose with a damped spring ---
 let rafId = null;
 function physicsStep() {
   let moving = false;
@@ -454,7 +1024,6 @@ function physicsStep() {
       moving = true;
     }
   }
-  // keep animating while still settling or while a card is being dragged
   rafId = (moving || drag) ? requestAnimationFrame(physicsStep) : null;
 }
 function ensureAnim() {
@@ -464,18 +1033,40 @@ function ensureAnim() {
 const _clear = clearBoard;
 clearBoard = function () { links.length = 0; _clear(); };
 
-// ============ Pan / Zoom ============
+/* ---- Pan / Zoom ------------------------------------------------------ */
 let scale = 1, panX = 0, panY = 0;
 function applyView() {
   world.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
 }
-function recenter() {
-  // center the stay card in viewport
-  scale = 0.85;
+function syncTargets() { targetScale = scale; targetPanX = panX; targetPanY = panY; }
+function recenter(animate = false) {
   const vw = window.innerWidth, vh = window.innerHeight;
-  panX = vw / 2 - (WORLD_W / 2) * scale;
-  panY = vh / 2 - (WORLD_H / 2) * scale;
-  applyView();
+  let nScale, nPanX, nPanY;
+  if (!cards.length) {
+    nScale = 0.55;
+    nPanX = vw / 2 - (WORLD_W / 2) * nScale;
+    nPanY = vh / 2 - (WORLD_H / 2) * nScale;
+  } else {
+    // fit all cards (any number of bases) into view
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const c of cards) {
+      minX = Math.min(minX, c.x - c.w / 2); maxX = Math.max(maxX, c.x + c.w / 2);
+      minY = Math.min(minY, c.y - c.h / 2); maxY = Math.max(maxY, c.y + c.h / 2);
+    }
+    const pad = 140;
+    nScale = Math.min(vw / (maxX - minX + pad * 2), (vh - 80) / (maxY - minY + pad * 2), 0.7);
+    const ccx = (minX + maxX) / 2, ccy = (minY + maxY) / 2;
+    nPanX = vw / 2 - ccx * nScale;
+    nPanY = (vh + 56) / 2 - ccy * nScale;
+  }
+  if (animate && typeof targetScale !== 'undefined') {
+    targetScale = nScale; targetPanX = nPanX; targetPanY = nPanY;
+    nudgeZoom();
+  } else {
+    scale = nScale; panX = nPanX; panY = nPanY;
+    applyView();
+    if (typeof targetScale !== 'undefined') syncTargets();
+  }
 }
 
 let isPanning = false, panStart = null;
@@ -489,6 +1080,7 @@ window.addEventListener('pointermove', (e) => {
   if (!isPanning) return;
   panX = e.clientX - panStart.x;
   panY = e.clientY - panStart.y;
+  targetPanX = panX; targetPanY = panY;   // pan owns the target during a drag
   applyView();
 });
 window.addEventListener('pointerup', () => {
@@ -496,34 +1088,62 @@ window.addEventListener('pointerup', () => {
   board.classList.remove('panning');
 });
 
+/* ---- smoothly interpolated zoom ---- */
+let targetScale = scale, targetPanX = panX, targetPanY = panY, zoomRaf = null;
+const ZOOM_LERP = 0.27;
+
+function tickZoom() {
+  const dS = targetScale - scale;
+  const dX = targetPanX - panX;
+  const dY = targetPanY - panY;
+  if (Math.abs(dS) < 0.0005 && Math.abs(dX) < 0.2 && Math.abs(dY) < 0.2) {
+    scale = targetScale; panX = targetPanX; panY = targetPanY;
+    applyView();
+    zoomRaf = null;
+    return;
+  }
+  scale += dS * ZOOM_LERP;
+  panX += dX * ZOOM_LERP;
+  panY += dY * ZOOM_LERP;
+  applyView();
+  zoomRaf = requestAnimationFrame(tickZoom);
+}
+function nudgeZoom() { if (zoomRaf === null) zoomRaf = requestAnimationFrame(tickZoom); }
+
 board.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const factor = e.deltaY < 0 ? 1.1 : 0.9;
-  const newScale = Math.min(2, Math.max(0.35, scale * factor));
-  // zoom toward cursor
+  // exponential scale step proportional to wheel delta — smoother than the
+  // old fixed 1.1/0.9 jumps, and trackpad pinch (small deltas) feels finer
+  const factor = Math.exp(-e.deltaY * 0.0025);
+  const newTarget = Math.min(2, Math.max(0.2, targetScale * factor));
   const mx = e.clientX, my = e.clientY;
-  panX = mx - (mx - panX) * (newScale / scale);
-  panY = my - (my - panY) * (newScale / scale);
-  scale = newScale;
-  applyView();
+  // anchor the zoom under the cursor (against the *target*, not current)
+  targetPanX = mx - (mx - targetPanX) * (newTarget / targetScale);
+  targetPanY = my - (my - targetPanY) * (newTarget / targetScale);
+  targetScale = newTarget;
+  nudgeZoom();
 }, { passive: false });
 
-// ============ Card dragging ============
+/* ---- Card dragging --------------------------------------------------- */
 let drag = null;
 world.addEventListener('pointerdown', (e) => {
+  if (editMode) return;            // no card dragging while editing
+  if (e.target.closest('.card-menu')) return;   // menu clicks aren't drags
   const cardEl = e.target.closest('.card');
   if (!cardEl) return;
   e.stopPropagation();
   const c = cards.find(c => c.el === cardEl);
   if (!c) return;
+  // commit any in-flight zoom/recenter interpolation so it doesn't fight the
+  // drag (each frame would otherwise re-write the world transform while we
+  // re-write the card transform, which feels like lag)
+  if (zoomRaf !== null) {
+    cancelAnimationFrame(zoomRaf); zoomRaf = null;
+    scale = targetScale; panX = targetPanX; panY = targetPanY;
+    applyView();
+  }
   cardEl.classList.add('dragging');
-  drag = {
-    c,
-    startX: e.clientX,
-    startY: e.clientY,
-    origX: c.x,
-    origY: c.y,
-  };
+  drag = { c, startX: e.clientX, startY: e.clientY, origX: c.x, origY: c.y };
   cardEl.setPointerCapture(e.pointerId);
 });
 world.addEventListener('pointermove', (e) => {
@@ -535,28 +1155,507 @@ world.addEventListener('pointermove', (e) => {
   place(drag.c);
   ensureAnim();
 });
-world.addEventListener('pointerup', (e) => {
+world.addEventListener('pointerup', () => {
   if (!drag) return;
   drag.c.el.classList.remove('dragging');
   drag = null;
 });
 
-// ============ Buttons ============
-document.getElementById('shuffle').addEventListener('click', () => {
-  buildTrip();
+/* ---- Card hover menu (Figma 105:559 / 105:536) ---- */
+function closeAllMenus(except) {
+  document.querySelectorAll('.card-menu.open').forEach(m => { if (m !== except) m.classList.remove('open'); });
+}
+world.addEventListener('click', (e) => {
+  if (editMode) return;
+  const menu = e.target.closest('.card-menu');
+  if (!menu) return;
+  e.stopPropagation();
+  // toggle on the dots button
+  if (e.target.closest('.card-menu-btn')) {
+    const willOpen = !menu.classList.contains('open');
+    closeAllMenus();
+    menu.classList.toggle('open', willOpen);
+    return;
+  }
+  // menu item clicked
+  const item = e.target.closest('.card-menu-item');
+  if (!item) return;
+  const card = cards.find(c => c.el.contains(menu));
+  if (card) handleMenuAction(card, item.dataset.act);
+  menu.classList.remove('open');
+});
+// click anywhere else closes any open menu
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('.card-menu')) closeAllMenus();
+}, true);
+
+const SPOT_TAGS = SPOTS.map(s => s.tag);
+function handleMenuAction(card, act) {
+  const el = card.el;
+  const paper = el.querySelector('.paper');
+  const tagSpan = el.querySelector('.tag-pill span');
+  if (act === 'tag') {
+    const isStay = el.classList.contains('stay');
+    const pool = isStay ? STAY_KINDS : SPOT_TAGS;
+    const cur = tagSpan.textContent.trim();
+    const next = pool[(pool.indexOf(cur) + 1) % pool.length];
+    tagSpan.textContent = next;
+    // refresh images to match the new keyword
+    const kw = TAG_KEYWORDS[next] || next.toLowerCase();
+    const newSeed = next + '-' + Math.random().toString(36).slice(2, 7);
+    const swap = (img, w, h, suf) => {
+      img.dataset.fb = PHOTO(newSeed + suf, w, h);
+      img.src = imgFor(kw, newSeed + suf, w, h);
+    };
+    swap(el.querySelector('.photo'), 760, 570, '');
+    swap(el.querySelector('.t-back'), 160, 140, '-c');
+    swap(el.querySelector('.t-mid'),  160, 140, '-b');
+    swap(el.querySelector('.t-front'),160, 140, '-a');
+  } else if (act === 'dup') {
+    const clone = el.cloneNode(true);
+    clone.classList.remove('dragging');
+    world.appendChild(clone);
+    const c = {
+      el: clone, x: card.x + 220, y: card.y + 60,
+      w: card.w, h: card.h,
+      tilt: +(Math.random() * 6 - 3).toFixed(2),
+    };
+    cards.push(c);
+    place(c);
+    // wire it back to a base (nearest one)
+    let nearest = bases[0], best = Infinity;
+    for (const b of bases) {
+      const d = Math.hypot(b.x - c.x, b.y - c.y);
+      if (d < best) { best = d; nearest = b; }
+    }
+    if (nearest && nearest !== c) makeString(nearest, c);
+    drawStrings();
+  } else if (act === 'fix') {
+    // straighten the card and snap it back to its anchor (visual "tidy")
+    card.tilt = 0;
+    place(card);
+  } else if (act === 'del') {
+    // drop any strings touching this card
+    for (let i = links.length - 1; i >= 0; i--) {
+      if (links[i].from === card || links[i].to === card) {
+        links[i].path.remove();
+        links.splice(i, 1);
+      }
+    }
+    el.remove();
+    const idx = cards.indexOf(card);
+    if (idx >= 0) cards.splice(idx, 1);
+    const bIdx = bases.indexOf(card);
+    if (bIdx >= 0) bases.splice(bIdx, 1);
+  }
+}
+
+/* ---- Buttons --------------------------------------------------------- */
+document.getElementById('recenter').addEventListener('click', () => recenter(true));
+
+/* ============================================================
+   DESIGN EDITOR (temporary — remove when done)
+   View/Edit modes, click-to-select, property inspector, and a
+   Commit that persists component-level overrides to localStorage.
+   ============================================================ */
+const EDITABLE = [
+  { sel: '.card',        name: 'Card wrapper' },
+  { sel: '.paper',       name: 'Card' },
+  { sel: '.pin',         name: 'Pushpin' },
+  { sel: '.photo-wrap',  name: 'Photo' },
+  { sel: '.tag-pill',    name: 'Tag pill' },
+  { sel: '.count',       name: 'Photo count' },
+  { sel: '.stack',       name: 'Photo stack' },
+  { sel: '.photo',       name: 'Photo image' },
+  { sel: '.text',        name: 'Text block' },
+  { sel: '.title',       name: 'Title' },
+  { sel: '.addr',        name: 'Address' },
+  { sel: '.row3',        name: 'Rating row' },
+  { sel: '.tier',        name: 'Price' },
+  { sel: '.quote',            name: 'Review' },
+  { sel: '#wine-canvas',      name: 'Wine animation' },
+  { sel: '#board-title-text', name: 'Title text' },
+  { sel: '#board-title',      name: 'Title block' },
+];
+const TEXT_SELECTORS = new Set(['.title', '.addr', '.tier', '.quote', '.tag-pill span', '#board-title-text', '.count']);
+const PROP_META = {
+  'font-size':       ['Font size', 'len'],
+  'font-weight':     ['Weight', 'weight'],
+  'line-height':     ['Line height', 'len'],
+  'letter-spacing':  ['Letter spacing', 'len'],
+  'color':           ['Text color', 'color'],
+  'background-color':['Background', 'color'],
+  'border-radius':   ['Corner radius', 'len'],
+  'padding-top':     ['Padding top', 'len'],
+  'padding-right':   ['Padding right', 'len'],
+  'padding-bottom':  ['Padding bottom', 'len'],
+  'padding-left':    ['Padding left', 'len'],
+  'margin-top':      ['Margin top', 'len'],
+  'margin-right':    ['Margin right', 'len'],
+  'margin-bottom':   ['Margin bottom', 'len'],
+  'margin-left':     ['Margin left', 'len'],
+  'width':           ['Width', 'len'],
+  'height':          ['Height', 'len'],
+  'gap':             ['Gap', 'len'],
+  'fill':            ['Fill', 'color'],
+  'stroke':          ['Stroke', 'color'],
+};
+
+const DYNAMIC_CLASSES = new Set(['tb-selected', 'dragging', 'stay']);
+
+let overrides = {};
+let curSel = null, curEl = null;
+let selPath = [], selIndex = 0, lastTarget = null, lastTime = 0;
+let history = [{}], histIndex = 0;
+
+const ovStyle = document.createElement('style');
+document.head.appendChild(ovStyle);
+function overrideCSS(important) {
+  let css = '';
+  for (const sel in overrides) {
+    const body = Object.entries(overrides[sel])
+      .map(([p, v]) => `${p}: ${v}${important ? ' !important' : ''};`).join(' ');
+    if (body) css += `${sel} { ${body} }\n`;
+  }
+  return css;
+}
+function applyOverrides() { ovStyle.textContent = overrideCSS(true); }
+
+try {
+  const saved = localStorage.getItem('tb-overrides');
+  if (saved) { overrides = JSON.parse(saved); applyOverrides(); }
+} catch (e) { /* ignore */ }
+history = [JSON.parse(JSON.stringify(overrides))];
+histIndex = 0;
+
+/* ---- turn any element into a stable, editable selector ---- */
+function describe(el) {
+  if (el.id) {
+    const m = EDITABLE.find(e => e.sel === '#' + el.id);
+    return { sel: '#' + el.id, name: m ? m.name : '#' + el.id };
+  }
+  if (el.tagName === 'SPAN' && el.closest('.tag-pill')) return { sel: '.tag-pill span', name: 'Tag label' };
+  for (const { sel, name } of EDITABLE) {
+    if (sel[0] === '.' && !sel.includes(' ') && el.classList.contains(sel.slice(1))) return { sel, name };
+  }
+  const cls = [...el.classList].filter(c => !DYNAMIC_CLASSES.has(c));
+  if (cls.length) { const s = '.' + cls.join('.'); return { sel: s, name: s }; }
+  let p = el.parentElement, anc = '';
+  while (p && p !== document.body) {
+    const pc = [...p.classList].filter(c => !DYNAMIC_CLASSES.has(c));
+    if (pc.length) { anc = '.' + pc[0] + ' '; break; }
+    p = p.parentElement;
+  }
+  const s = anc + el.tagName.toLowerCase();
+  return { sel: s, name: s };
+}
+function isKnown(el) {
+  for (const { sel } of EDITABLE) { try { if (el.matches(sel)) return true; } catch (_) {} }
+  if (el.tagName === 'SPAN' && el.closest('.tag-pill')) return true;
+  return false;
+}
+function friendly(el) {
+  const d = describe(el);
+  return (EDITABLE.find(e => e.sel === d.sel) || {}).name || d.name;
+}
+
+/* ---- selection (single click = nearest component, again = drill deeper) ---- */
+function buildPath(root, target) {
+  const path = [];
+  let n = target;
+  while (n) { path.unshift(n); if (n === root) break; n = n.parentElement; }
+  return path;
+}
+function selectIndex(i) {
+  selIndex = Math.max(0, Math.min(i, selPath.length - 1));
+  selectEl(selPath[selIndex]);
+}
+function selectEl(el) {
+  document.querySelectorAll('.tb-selected').forEach(e => e.classList.remove('tb-selected'));
+  if (!el) { curSel = null; curEl = null; renderInspector(); return; }
+  const d = describe(el);
+  curSel = d.sel; curEl = el;
+  el.classList.add('tb-selected');
+  renderInspector();
+}
+
+function propsFor(el, sel) {
+  const cs = getComputedStyle(el);
+  const isSvg = el instanceof SVGElement;
+  const hasText = !isSvg && [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+  const list = [];
+  if (!isSvg && (TEXT_SELECTORS.has(sel) || hasText)) list.push('font-size', 'font-weight', 'line-height', 'letter-spacing', 'color');
+  if (isSvg) list.push('fill', 'stroke');
+  if (!isSvg) list.push('width', 'height', 'background-color', 'border-radius', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'margin-top', 'margin-right', 'margin-bottom', 'margin-left');
+  if (cs.display.includes('flex')) list.push('gap');
+  return list;
+}
+function curValue(sel, prop, el) {
+  if (overrides[sel] && overrides[sel][prop] != null) return overrides[sel][prop];
+  return getComputedStyle(el).getPropertyValue(prop);
+}
+function rgbToHex(rgb) {
+  if (rgb && rgb[0] === '#') return rgb;
+  const m = (rgb || '').match(/\d+(\.\d+)?/g);
+  if (!m) return '#000000';
+  return '#' + m.slice(0, 3).map(x => Math.round(+x).toString(16).padStart(2, '0')).join('');
+}
+function setOverride(sel, prop, val) {
+  (overrides[sel] = overrides[sel] || {})[prop] = val;
+  applyOverrides();
+}
+
+function renderCrumb() {
+  const c = document.getElementById('tb-crumb');
+  if (!selPath.length) { c.innerHTML = ''; return; }
+  c.innerHTML = selPath.map((el, i) =>
+    `<button class="tb-chip ${i === selIndex ? 'on' : ''}" data-i="${i}">${friendly(el)}</button>`
+  ).join('<span class="tb-sep">›</span>');
+  c.querySelectorAll('.tb-chip').forEach(b => b.onclick = () => selectIndex(+b.dataset.i));
+}
+function renderInspector() {
+  const body = document.getElementById('tb-insp-body');
+  const titleEl = document.getElementById('tb-insp-title');
+  renderCrumb();
+  if (!curEl) { titleEl.textContent = 'Select an element'; body.innerHTML = ''; return; }
+  const d = describe(curEl);
+  const name = (EDITABLE.find(e => e.sel === d.sel) || {}).name || d.name;
+  titleEl.innerHTML = `${name}<br><span class="tb-sub">editing all <code>${d.sel}</code></span>`;
+  const props = propsFor(curEl, d.sel);
+  body.innerHTML = props.map(p => fieldHTML(p, d.sel)).join('');
+  props.forEach(p => wireField(p, d.sel));
+}
+function fieldHTML(prop, sel) {
+  const [label, type] = PROP_META[prop] || [prop, 'len'];
+  const val = curValue(sel, prop, curEl);
+  if (type === 'color') {
+    const hex = rgbToHex(val);
+    return `<label class="tb-f"><span>${label}</span>
+      <input type="color" data-p="${prop}" data-t="color" value="${hex}">
+      <input type="text" class="tb-hex" data-p="${prop}" data-t="colortext" value="${hex}"></label>`;
+  }
+  if (type === 'weight') {
+    const opts = ['400', '500', '600', '700'].map(o => `<option ${parseInt(val) == o ? 'selected' : ''}>${o}</option>`).join('');
+    return `<label class="tb-f"><span>${label}</span><select data-p="${prop}" data-t="weight">${opts}</select></label>`;
+  }
+  const num = parseFloat(val) || 0;
+  return `<label class="tb-f"><span>${label}</span>
+    <input type="number" step="0.5" data-p="${prop}" data-t="len" value="${+num.toFixed(2)}"><em>px</em></label>`;
+}
+function wireField(prop, sel) {
+  document.querySelectorAll(`#tb-insp-body [data-p="${prop}"]`).forEach(inp => {
+    inp.addEventListener('input', () => {
+      const t = inp.dataset.t;
+      if (t === 'len') setOverride(sel, prop, `${inp.value}px`);
+      else if (t === 'weight') setOverride(sel, prop, inp.value);
+      else {
+        setOverride(sel, prop, inp.value);
+        document.querySelectorAll(`#tb-insp-body [data-p="${prop}"]`).forEach(o => { if (o !== inp) o.value = inp.value; });
+      }
+    });
+    inp.addEventListener('change', () => snapshot());  // one undo step per committed edit
+  });
+}
+
+/* ---- undo / redo ---- */
+function snapshot() {
+  history = history.slice(0, histIndex + 1);
+  history.push(JSON.parse(JSON.stringify(overrides)));
+  histIndex = history.length - 1;
+  updateHistButtons();
+}
+function undo() {
+  if (histIndex <= 0) return;
+  histIndex--; overrides = JSON.parse(JSON.stringify(history[histIndex]));
+  applyOverrides(); renderInspector(); updateHistButtons();
+}
+function redo() {
+  if (histIndex >= history.length - 1) return;
+  histIndex++; overrides = JSON.parse(JSON.stringify(history[histIndex]));
+  applyOverrides(); renderInspector(); updateHistButtons();
+}
+function updateHistButtons() {
+  const u = document.getElementById('tb-undo'), r = document.getElementById('tb-redo');
+  if (u) u.disabled = histIndex <= 0;
+  if (r) r.disabled = histIndex >= history.length - 1;
+}
+
+function setMode(edit) {
+  editMode = edit;
+  document.body.classList.toggle('tb-edit', edit);
+  document.getElementById('tb-mode-view').classList.toggle('on', !edit);
+  document.getElementById('tb-mode-edit').classList.toggle('on', edit);
+  document.getElementById('tb-inspector').style.display = edit ? 'flex' : 'none';
+  if (!edit) {
+    document.querySelectorAll('.tb-selected').forEach(e => e.classList.remove('tb-selected'));
+    curSel = null; curEl = null;
+  }
+}
+function tbToast(msg) {
+  const t = document.getElementById('tb-toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(tbToast._t);
+  tbToast._t = setTimeout(() => t.classList.remove('show'), 1500);
+}
+
+world.addEventListener('click', (e) => {
+  if (!editMode) return;
+  const root = e.target.closest('.card') || e.target.closest('#board-title');
+  if (!root) return;
+  e.stopPropagation();
+  const target = e.target;
+  const same = target === lastTarget && (Date.now() - lastTime) < 600;
+  lastTarget = target; lastTime = Date.now();
+  selPath = buildPath(root, target);
+  if (same) {
+    selectIndex(selIndex + 1);            // drill one step deeper toward the tap
+  } else {
+    let di = selPath.length - 1;          // first click: nearest known component
+    for (let i = selPath.length - 1; i >= 0; i--) { if (isKnown(selPath[i])) { di = i; break; } }
+    selectIndex(di);
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (!editMode) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+});
+document.getElementById('tb-mode-view').onclick = () => setMode(false);
+document.getElementById('tb-mode-edit').onclick = () => setMode(true);
+document.getElementById('tb-undo').onclick = undo;
+document.getElementById('tb-redo').onclick = redo;
+document.getElementById('tb-commit').onclick = () => {
+  try { localStorage.setItem('tb-overrides', JSON.stringify(overrides)); tbToast('Committed ✓'); }
+  catch (e) { tbToast('Save failed'); }
+};
+document.getElementById('tb-copy').onclick = async () => {
+  const css = overrideCSS(false).trim() || '/* no changes */';
+  try { await navigator.clipboard.writeText(css); tbToast('CSS copied'); }
+  catch (e) { tbToast('CSS in console'); }
+  console.log('=== Trip Board overrides ===\n' + css);
+};
+document.getElementById('tb-reset').onclick = () => {
+  overrides = {}; applyOverrides(); localStorage.removeItem('tb-overrides');
+  snapshot(); renderInspector(); tbToast('Reset');
+};
+updateHistButtons();
+/* ===== /DESIGN EDITOR ===== */
+
+/* ============================================================
+   WORLD MAP (Leaflet + OpenStreetMap/CARTO tiles, no API key)
+   ============================================================ */
+let map = null;
+const MAP_MARKERS = [];
+
+function setupMap() {
+  map = L.map('map', { worldCopyJump: true, minZoom: 2, zoomControl: true }).setView([20, 0], 2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap, © CARTO', subdomains: 'abcd', maxZoom: 19,
+  }).addTo(map);
+
+  const pts = [];
+  for (const dest of DESTINATIONS) {
+    const price = randInt(700, 3200);
+    dest.price = price;
+    const seed = 'dest-' + dest.city.toLowerCase().replace(/\s/g, '');
+    const mkw = CITY_KW[dest.city] || 'landmark';
+    const html =
+      `<div class="mc">
+        <div class="mc-photos">
+          ${tagImg('mc-ph mc-ph-l', mkw, seed + '-l', 160, 140)}
+          ${tagImg('mc-ph mc-ph-r', mkw, seed + '-r', 160, 140)}
+          ${tagImg('mc-ph mc-ph-c', mkw, seed + '-c', 160, 140)}
+        </div>
+        <div class="mc-pill">${dest.name}<span class="dot"></span>${dest.cur}${price.toLocaleString()}</div>
+      </div>`;
+    const icon = L.divIcon({ className: 'mc-marker', html, iconSize: [128, 132], iconAnchor: [64, 132] });
+    const marker = L.marker([dest.lat, dest.lng], { icon }).addTo(map).on('click', () => openBoard(dest));
+    MAP_MARKERS.push({ marker, latlng: [dest.lat, dest.lng], price });
+    pts.push([dest.lat, dest.lng]);
+  }
+  map.fitBounds(pts, { padding: [90, 90] });
+  map.on('zoomend moveend resize', declutter);
+  map.whenReady(declutter);
+}
+
+function rectsOverlap(a, b) {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+// box around a marker's geo pixel point (anchored at the pill, photos extend up)
+function markerBox(p, expanded) {
+  return expanded
+    ? { left: p.x - 62, right: p.x + 62, top: p.y - 132, bottom: p.y + 4 }
+    : { left: p.x - 58, right: p.x + 58, top: p.y - 30, bottom: p.y + 4 };
+}
+// Symmetric declutter: a marker shows its photos only if its expanded photo
+// cluster wouldn't intersect ANY other marker's expanded cluster at the
+// current zoom. If two markers would overlap, both collapse to text pills —
+// no "winner takes the space" asymmetry.
+function declutter() {
+  if (!map) return;
+  const items = MAP_MARKERS.map(m => ({
+    el: m.marker.getElement(),
+    box: markerBox(map.latLngToContainerPoint(m.latlng), true),
+  }));
+  for (let i = 0; i < items.length; i++) {
+    if (!items[i].el) continue;
+    let intersects = false;
+    for (let j = 0; j < items.length; j++) {
+      if (i !== j && rectsOverlap(items[i].box, items[j].box)) { intersects = true; break; }
+    }
+    items[i].el.classList.toggle('collapsed', intersects);
+  }
+}
+
+/* ---- Rive wine animation sitting on the big title ---- */
+let wineRive = null, wineHover = null, wineInited = false;
+function initWine() {
+  if (wineInited || typeof rive === 'undefined') return;
+  wineInited = true;
+  wineRive = new rive.Rive({
+    src: 'wine.riv',
+    canvas: document.getElementById('wine-canvas'),
+    artboard: 'Wine',
+    stateMachines: 'State Machine 1',
+    autoplay: true,
+    autoBind: true,
+    onLoad: () => {
+      try {
+        let vmi = wineRive.viewModelInstance;
+        if (!vmi) {
+          const vm = wineRive.viewModelByName('WineVm');
+          vmi = vm.defaultInstance ? vm.defaultInstance() : vm.instance();
+          wineRive.bindViewModelInstance(vmi);
+        }
+        wineHover = vmi.boolean('isHovered');
+      } catch (e) { console.warn('Wine view-model bind failed:', e); }
+    },
+  });
+  const titleText = document.getElementById('board-title-text');
+  titleText.addEventListener('mouseenter', () => { if (wineHover) wineHover.value = true; });
+  titleText.addEventListener('mouseleave', () => { if (wineHover) wineHover.value = false; });
+}
+
+function openBoard(dest) {
+  document.getElementById('map-view').style.display = 'none';
+  document.getElementById('board-view').hidden = false;
+  buildBoard(dest);
   recenter();
-});
-document.getElementById('recenter').addEventListener('click', recenter);
+  ensureAnim();
+  initWine();
+}
+function showMap() {
+  setMode(false);
+  document.getElementById('board-view').hidden = true;
+  document.getElementById('map-view').style.display = 'block';
+  if (map) setTimeout(() => map.invalidateSize(), 0);
+}
+document.getElementById('back-to-map').addEventListener('click', showMap);
 
-document.getElementById('slack').addEventListener('input', (e) => {
-  slack = e.target.value / 100;
-  ensureAnim(); // let the ropes spring to the new slack
-});
-
-// init
-buildTrip();
-recenter();
-window.addEventListener('resize', () => { /* keep current pan */ });
+/* ---- Init ------------------------------------------------------------ */
+setupMap();
 </script>
 </body>
 </html>
